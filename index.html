@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Last Lighthouse</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px;
+    background: #0a1828; color: #d8e4f0;
+    font-family: 'Georgia', serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh;
+  }
+  h1 { margin: 0 0 4px 0; color: #f0c674; letter-spacing: 2px; }
+  .subtitle { font-style: italic; color: #8aa; margin-bottom: 12px; }
+  #hud {
+    display: flex; gap: 24px; margin-bottom: 12px;
+    background: #112236; padding: 10px 20px; border-radius: 6px;
+    border: 1px solid #2a3f5a;
+  }
+  .stat { display: flex; flex-direction: column; align-items: center; min-width: 70px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; color: #8aa; letter-spacing: 1px; }
+  .stat-value { font-size: 22px; font-weight: bold; color: #f0c674; }
+  canvas {
+    background: #0d1f33;
+    border: 2px solid #2a3f5a;
+    border-radius: 4px;
+    image-rendering: pixelated;
+  }
+  #controls {
+    margin-top: 12px;
+    display: flex; gap: 12px; align-items: center;
+  }
+  button {
+    background: #2a3f5a; color: #f0c674;
+    border: 1px solid #4a6080;
+    padding: 8px 16px; font-family: inherit; font-size: 14px;
+    border-radius: 4px; cursor: pointer;
+  }
+  button:hover { background: #3a5070; }
+  #log {
+    margin-top: 12px;
+    width: 600px; height: 90px; overflow-y: auto;
+    background: #112236; padding: 8px 12px; border-radius: 4px;
+    font-size: 13px; border: 1px solid #2a3f5a;
+  }
+  .log-entry { margin: 2px 0; }
+  .log-good { color: #8fce8f; }
+  .log-bad { color: #e08080; }
+  .log-info { color: #d8e4f0; }
+  #overlay {
+    position: fixed; inset: 0;
+    background: rgba(10, 24, 40, 0.92);
+    display: none; align-items: center; justify-content: center;
+    flex-direction: column; z-index: 10;
+  }
+  #overlay.show { display: flex; }
+  #overlay h2 { color: #f0c674; font-size: 36px; margin-bottom: 8px; }
+  #overlay p { max-width: 500px; text-align: center; line-height: 1.5; }
+  .hint { font-size: 12px; color: #8aa; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>THE LAST LIGHTHOUSE</h1>
+  <div class="subtitle">A storm devours the sea. Reach the beacon before the fog claims you.</div>
+
+  <div id="hud">
+    <div class="stat"><span class="stat-label">Fuel</span><span class="stat-value" id="fuel">20</span></div>
+    <div class="stat"><span class="stat-label">Cargo</span><span class="stat-value" id="cargo">0</span></div>
+    <div class="stat"><span class="stat-label">Morale</span><span class="stat-value" id="morale">10</span></div>
+    <div class="stat"><span class="stat-label">Turn</span><span class="stat-value" id="turn">1</span></div>
+    <div class="stat"><span class="stat-label">Distance</span><span class="stat-value" id="dist">--</span></div>
+    <div class="stat"><span class="stat-label">Wind (shift in)</span><span class="stat-value" id="wind" style="font-size:22px;">-</span></div>
+  </div>
+
+  <canvas id="game" width="600" height="600"></canvas>
+
+  <div id="controls">
+    <button id="waitBtn">Wait (rest crew, +1 morale)</button>
+    <button id="restartBtn">New Voyage</button>
+  </div>
+  <div class="hint">Arrow keys / WASD to sail &middot; Click an adjacent tile to move &middot; The colored badges (0/1/2) on neighbors show the fuel cost in the current wind &middot; Reach the gold lighthouse</div>
+  <button id="tutorialBtn" style="margin-top:6px;">Show Tutorial</button>
+
+  <div id="log"></div>
+
+  <div id="overlay">
+    <h2 id="overlayTitle"></h2>
+    <p id="overlayText"></p>
+    <button id="overlayBtn" style="margin-top: 16px;">Set Sail Again</button>
+  </div>
+
+  <div id="tutorial" style="position:fixed;inset:0;background:rgba(10,24,40,0.95);display:none;align-items:center;justify-content:center;z-index:20;">
+    <div style="max-width:560px;background:#112236;border:1px solid #2a3f5a;border-radius:8px;padding:24px;">
+      <h2 style="color:#f0c674;margin-top:0;">How to Sail</h2>
+      <div id="tutContent" style="line-height:1.6;font-size:14px;"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:16px;">
+        <button id="tutPrev">&larr; Back</button>
+        <span id="tutStep" style="color:#8aa;align-self:center;"></span>
+        <button id="tutNext">Next &rarr;</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const GRID = 12;
+  const TILE = 50;
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  const TILE_SEA = 0, TILE_ISLAND = 1, TILE_PORT = 2, TILE_LIGHTHOUSE = 3, TILE_FOG = 4;
+
+  let state;
+
+  function rand(n) { return Math.floor(Math.random() * n); }
+
+  const WIND_DIRS = [
+    { dx: 0, dy: -1, arrow: '↑', name: 'North' },
+    { dx: 1, dy: -1, arrow: '↗', name: 'NE' },
+    { dx: 1, dy: 0,  arrow: '→', name: 'East' },
+    { dx: 1, dy: 1,  arrow: '↘', name: 'SE' },
+    { dx: 0, dy: 1,  arrow: '↓', name: 'South' },
+    { dx: -1, dy: 1, arrow: '↙', name: 'SW' },
+    { dx: -1, dy: 0, arrow: '←', name: 'West' },
+    { dx: -1, dy: -1,arrow: '↖', name: 'NW' },
+  ];
+  function randomWind() { return WIND_DIRS[rand(WIND_DIRS.length)]; }
+
+  // Returns: 'with' (full alignment), 'cross' (perpendicular-ish), 'against' (opposing)
+  function windRelation(wind, dx, dy) {
+    // dot product of unit-ish vectors
+    const dot = wind.dx * dx + wind.dy * dy;
+    if (dot > 0) return 'with';
+    if (dot < 0) return 'against';
+    return 'cross';
+  }
+
+  function newGame() {
+    const map = Array.from({length: GRID}, () =>
+      Array.from({length: GRID}, () => ({ type: TILE_SEA, fog: false, visited: false }))
+    );
+
+    // ship starts bottom-left
+    const ship = { x: 1, y: GRID - 2 };
+
+    // lighthouse top-right
+    const lighthouse = { x: GRID - 2, y: 1 };
+    map[lighthouse.y][lighthouse.x].type = TILE_LIGHTHOUSE;
+
+    // scatter islands and ports
+    let placed = 0;
+    while (placed < 14) {
+      const x = rand(GRID), y = rand(GRID);
+      const t = map[y][x];
+      if (t.type !== TILE_SEA) continue;
+      if (Math.abs(x - ship.x) + Math.abs(y - ship.y) < 2) continue;
+      if (Math.abs(x - lighthouse.x) + Math.abs(y - lighthouse.y) < 2) continue;
+      t.type = Math.random() < 0.3 ? TILE_PORT : TILE_ISLAND;
+      t.fuel = 4 + rand(5);
+      t.cargo = Math.random() < 0.5 ? 1 + rand(3) : 0;
+      placed++;
+    }
+
+    state = {
+      map, ship, lighthouse,
+      fuel: 20, cargo: 0, morale: 10, turn: 1,
+      gameOver: false, won: false,
+      fogTurnsToSpread: 3,
+      wind: randomWind(),
+      windTurnsLeft: 4 + rand(4),
+    };
+
+    // initial fog seeded on edges
+    seedFog();
+    draw();
+    updateHUD();
+    log('You set sail from the harbor. The fog is rising in the distance...', 'info');
+  }
+
+  function seedFog() {
+    for (let i = 0; i < GRID; i++) {
+      if (Math.random() < 0.25) state.map[0][i].fog = true;
+      if (Math.random() < 0.25) state.map[GRID-1][i].fog = true;
+      if (Math.random() < 0.25) state.map[i][0].fog = true;
+      if (Math.random() < 0.25) state.map[i][GRID-1].fog = true;
+    }
+    // clear a 2-tile safe radius around ship and lighthouse at start
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        const ds = Math.abs(x - state.ship.x) + Math.abs(y - state.ship.y);
+        const dl = Math.abs(x - state.lighthouse.x) + Math.abs(y - state.lighthouse.y);
+        if (ds <= 2 || dl <= 2) state.map[y][x].fog = false;
+      }
+    }
+  }
+
+  function spreadFog() {
+    const newFog = [];
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        if (state.map[y][x].fog) continue;
+        let neighbors = 0;
+        const ds = [[-1,0],[1,0],[0,-1],[0,1]];
+        for (const [dx,dy] of ds) {
+          const nx = x+dx, ny = y+dy;
+          if (nx<0||ny<0||nx>=GRID||ny>=GRID) continue;
+          if (state.map[ny][nx].fog) neighbors++;
+        }
+        const chance = neighbors * 0.10;
+        if (Math.random() < chance) newFog.push([x, y]);
+      }
+    }
+    for (const [x, y] of newFog) {
+      // never fog the lighthouse - it's the beacon
+      if (state.map[y][x].type === TILE_LIGHTHOUSE) continue;
+      state.map[y][x].fog = true;
+    }
+  }
+
+  function tryMove(dx, dy) {
+    if (state.gameOver) return;
+    const nx = state.ship.x + dx, ny = state.ship.y + dy;
+    if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) {
+      log('The edge of the charted sea. Turn back.', 'bad');
+      return;
+    }
+    state.ship.x = nx; state.ship.y = ny;
+    const rel = windRelation(state.wind, dx, dy);
+    let fuelCost = 1;
+    let drifted = false;
+    if (rel === 'with') {
+      fuelCost = 0;
+      log(`Wind ${state.wind.name} carries you. Free sailing!`, 'good');
+    } else if (rel === 'against') {
+      fuelCost = 2;
+      log(`Beating against the ${state.wind.name} wind. Fuel -2.`, 'bad');
+    } else {
+      fuelCost = 1;
+    }
+    state.fuel -= fuelCost;
+    state.turn += 1;
+    state.windTurnsLeft -= 1;
+
+    const tile = state.map[ny][nx];
+    tile.visited = true;
+
+    if (tile.fog) {
+      state.morale -= 2;
+      log('You sail into the fog. The crew shudders. (-2 morale)', 'bad');
+    }
+
+    if (tile.type === TILE_ISLAND && tile.fuel > 0) {
+      const f = tile.fuel; state.fuel += f; tile.fuel = 0;
+      log(`Island! Refueled +${f}.`, 'good');
+      if (tile.cargo > 0) {
+        state.cargo += tile.cargo;
+        log(`Found ${tile.cargo} crates of cargo.`, 'good');
+        tile.cargo = 0;
+      }
+    } else if (tile.type === TILE_PORT && tile.fuel > 0) {
+      const f = tile.fuel + 3; state.fuel += f; tile.fuel = 0;
+      state.morale = Math.min(15, state.morale + 2);
+      log(`Port reached! +${f} fuel, +2 morale, hot meal for crew.`, 'good');
+      if (tile.cargo > 0) {
+        state.cargo += tile.cargo; tile.cargo = 0;
+      }
+    } else if (tile.type === TILE_LIGHTHOUSE) {
+      win();
+      return;
+    }
+
+    // wind shift?
+    if (state.windTurnsLeft <= 0) {
+      const old = state.wind;
+      let next = randomWind();
+      while (next === old) next = randomWind();
+      state.wind = next;
+      state.windTurnsLeft = 4 + rand(4);
+      log(`The wind shifts. Now blowing ${state.wind.name} ${state.wind.arrow}.`, 'info');
+    }
+
+    // wind-with bonus drift: if you sailed with wind, occasionally get a free push
+    if (rel === 'with' && Math.random() < 0.5) {
+      const px = state.ship.x + state.wind.dx;
+      const py = state.ship.y + state.wind.dy;
+      if (px >= 0 && py >= 0 && px < GRID && py < GRID) {
+        const ptile = state.map[py][px];
+        // only drift onto open clear sea — never onto islands, lighthouse, or fog
+        if (ptile.type === TILE_SEA && !ptile.fog) {
+          state.ship.x = px; state.ship.y = py;
+          ptile.visited = true;
+          log('The wind pushes you forward an extra tile.', 'good');
+        }
+      }
+    }
+
+    spreadFog();
+
+    // check fog engulf
+    if (state.map[state.ship.y][state.ship.x].fog && state.morale <= 0) {
+      lose('The crew, broken by the endless fog, mutinies. Your ship is lost to the storm.');
+      return;
+    }
+    if (state.fuel <= 0) {
+      lose('Your fuel runs dry. The ship drifts as the fog swallows the horizon.');
+      return;
+    }
+    if (state.morale <= 0) {
+      lose('Morale collapses. The crew abandons ship in the lifeboats.');
+      return;
+    }
+
+    draw();
+    updateHUD();
+  }
+
+  function waitTurn() {
+    if (state.gameOver) return;
+    state.turn += 1;
+    state.morale = Math.min(15, state.morale + 1);
+    log('You wait. The crew rests. (+1 morale)', 'info');
+    spreadFog();
+    if (state.map[state.ship.y][state.ship.x].fog) {
+      state.morale -= 1;
+      log('But the fog presses closer...', 'bad');
+    }
+    draw();
+    updateHUD();
+  }
+
+  function win() {
+    state.gameOver = true; state.won = true;
+    const score = state.fuel * 10 + state.cargo * 25 + state.morale * 15 + (50 - state.turn) * 5;
+    showOverlay('The Last Lighthouse',
+      `You reach the beacon as the fog closes behind you. The light burns again.\n\n` +
+      `Turns: ${state.turn} | Fuel left: ${state.fuel} | Cargo: ${state.cargo} | Morale: ${state.morale}\n\n` +
+      `Final Score: ${score}`);
+  }
+
+  function lose(reason) {
+    state.gameOver = true;
+    draw();
+    updateHUD();
+    showOverlay('Lost at Sea', reason);
+  }
+
+  // also reflect final state on win
+
+
+  // ---------- Rendering ----------
+  function draw() {
+    ctx.fillStyle = '#0d1f33';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        const t = state.map[y][x];
+        const px = x * TILE, py = y * TILE;
+
+        // sea base
+        ctx.fillStyle = '#1a3a5c';
+        ctx.fillRect(px, py, TILE, TILE);
+
+        // wave hint
+        ctx.strokeStyle = '#234a72';
+        ctx.beginPath();
+        ctx.moveTo(px + 6, py + TILE - 8);
+        ctx.quadraticCurveTo(px + TILE/2, py + TILE - 12, px + TILE - 6, py + TILE - 8);
+        ctx.stroke();
+
+        if (t.type === TILE_ISLAND) {
+          ctx.fillStyle = t.fuel > 0 ? '#5a8c3a' : '#3a5c2a';
+          ctx.beginPath();
+          ctx.arc(px + TILE/2, py + TILE/2, TILE/2 - 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#3a5c2a';
+          ctx.fillRect(px + TILE/2 - 2, py + 10, 4, 12);
+        } else if (t.type === TILE_PORT) {
+          ctx.fillStyle = t.fuel > 0 ? '#a87040' : '#604028';
+          ctx.fillRect(px + 8, py + 8, TILE - 16, TILE - 16);
+          ctx.fillStyle = '#f0c674';
+          ctx.fillRect(px + TILE/2 - 3, py + 12, 6, 6);
+        } else if (t.type === TILE_LIGHTHOUSE) {
+          // glowing lighthouse
+          const grd = ctx.createRadialGradient(px+TILE/2, py+TILE/2, 4, px+TILE/2, py+TILE/2, TILE);
+          grd.addColorStop(0, 'rgba(240, 198, 116, 0.9)');
+          grd.addColorStop(1, 'rgba(240, 198, 116, 0)');
+          ctx.fillStyle = grd;
+          ctx.fillRect(px - TILE/2, py - TILE/2, TILE*2, TILE*2);
+          ctx.fillStyle = '#f0c674';
+          ctx.fillRect(px + TILE/2 - 4, py + 8, 8, TILE - 16);
+          ctx.fillStyle = '#fff7d0';
+          ctx.beginPath();
+          ctx.arc(px + TILE/2, py + 12, 5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // fog overlay
+        if (t.fog) {
+          ctx.fillStyle = 'rgba(180, 190, 200, 0.55)';
+          ctx.fillRect(px, py, TILE, TILE);
+          ctx.fillStyle = 'rgba(220, 220, 230, 0.25)';
+          ctx.beginPath();
+          ctx.arc(px + 12 + (state.turn*7+x*13)%20, py + 14, 8, 0, Math.PI*2);
+          ctx.arc(px + 30, py + 30, 10, 0, Math.PI*2);
+          ctx.fill();
+        }
+
+        // grid lines
+        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+        ctx.strokeRect(px, py, TILE, TILE);
+      }
+    }
+
+    // wind streaks across the canvas (visual feedback)
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.strokeStyle = '#cfe6ff';
+    ctx.lineWidth = 2;
+    const w = state.wind;
+    for (let i = 0; i < 18; i++) {
+      const baseX = (i * 53 + (state.turn * 11)) % canvas.width;
+      const baseY = (i * 71 + (state.turn * 7)) % canvas.height;
+      ctx.beginPath();
+      ctx.moveTo(baseX, baseY);
+      ctx.lineTo(baseX + w.dx * 22, baseY + w.dy * 22);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // wind compass (top-right of canvas)
+    ctx.save();
+    const cx = canvas.width - 36, cy = 36;
+    ctx.fillStyle = 'rgba(17, 34, 54, 0.85)';
+    ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#f0c674'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = '#f0c674';
+    ctx.font = 'bold 24px Georgia';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(w.arrow, cx, cy);
+    ctx.restore();
+
+    // adjacent move-cost indicators (preview per direction)
+    const adj = [[0,-1],[0,1],[-1,0],[1,0]];
+    for (const [dx, dy] of adj) {
+      const ax = state.ship.x + dx, ay = state.ship.y + dy;
+      if (ax < 0 || ay < 0 || ax >= GRID || ay >= GRID) continue;
+      const rel = windRelation(state.wind, dx, dy);
+      const cost = rel === 'with' ? 0 : rel === 'against' ? 2 : 1;
+      const color = rel === 'with' ? '#7be07b' : rel === 'against' ? '#e07b7b' : '#e0d27b';
+      const px = ax * TILE, py = ay * TILE;
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(px + 2, py + 2, TILE - 4, TILE - 4);
+      // cost badge
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(px + TILE - 10, py + 10, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#0a1828';
+      ctx.font = 'bold 12px Georgia';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(cost), px + TILE - 10, py + 10);
+      ctx.restore();
+    }
+
+    // ship
+    const sx = state.ship.x * TILE, sy = state.ship.y * TILE;
+    // ship tile highlight
+    ctx.save();
+    ctx.strokeStyle = '#f0c674';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(sx + 1, sy + 1, TILE - 2, TILE - 2);
+    ctx.restore();
+    ctx.fillStyle = '#3a2a1a';
+    ctx.beginPath();
+    ctx.moveTo(sx + 8, sy + TILE - 14);
+    ctx.lineTo(sx + TILE - 8, sy + TILE - 14);
+    ctx.lineTo(sx + TILE - 14, sy + TILE - 8);
+    ctx.lineTo(sx + 14, sy + TILE - 8);
+    ctx.closePath();
+    ctx.fill();
+    // mast
+    ctx.fillStyle = '#6a4a2a';
+    ctx.fillRect(sx + TILE/2 - 1, sy + 8, 2, TILE - 22);
+    // sail
+    ctx.fillStyle = '#f4f0e0';
+    ctx.beginPath();
+    ctx.moveTo(sx + TILE/2, sy + 10);
+    ctx.lineTo(sx + TILE - 12, sy + TILE - 18);
+    ctx.lineTo(sx + TILE/2, sy + TILE - 18);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function updateHUD() {
+    document.getElementById('fuel').textContent = state.fuel;
+    document.getElementById('cargo').textContent = state.cargo;
+    document.getElementById('morale').textContent = state.morale;
+    document.getElementById('turn').textContent = state.turn;
+    const d = Math.abs(state.ship.x - state.lighthouse.x) + Math.abs(state.ship.y - state.lighthouse.y);
+    document.getElementById('dist').textContent = d;
+    document.getElementById('wind').textContent = state.wind.arrow + '  ' + state.windTurnsLeft + 't';
+  }
+
+  function log(msg, kind = 'info') {
+    const el = document.getElementById('log');
+    const div = document.createElement('div');
+    div.className = 'log-entry log-' + kind;
+    div.textContent = '> ' + msg;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function showOverlay(title, text) {
+    document.getElementById('overlayTitle').textContent = title;
+    document.getElementById('overlayText').textContent = text;
+    document.getElementById('overlay').classList.add('show');
+  }
+
+  // ---------- Input ----------
+  document.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'arrowup' || k === 'w') { tryMove(0, -1); e.preventDefault(); }
+    else if (k === 'arrowdown' || k === 's') { tryMove(0, 1); e.preventDefault(); }
+    else if (k === 'arrowleft' || k === 'a') { tryMove(-1, 0); e.preventDefault(); }
+    else if (k === 'arrowright' || k === 'd') { tryMove(1, 0); e.preventDefault(); }
+    else if (k === ' ' || k === '.') { waitTurn(); e.preventDefault(); }
+  });
+
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / (rect.width / GRID));
+    const y = Math.floor((e.clientY - rect.top) / (rect.height / GRID));
+    const dx = x - state.ship.x, dy = y - state.ship.y;
+    if (Math.abs(dx) + Math.abs(dy) === 1) tryMove(dx, dy);
+  });
+
+  document.getElementById('waitBtn').addEventListener('click', waitTurn);
+  document.getElementById('restartBtn').addEventListener('click', () => {
+    document.getElementById('log').innerHTML = '';
+    document.getElementById('overlay').classList.remove('show');
+    newGame();
+  });
+  document.getElementById('overlayBtn').addEventListener('click', () => {
+    document.getElementById('log').innerHTML = '';
+    document.getElementById('overlay').classList.remove('show');
+    newGame();
+  });
+
+  // ---------- Tutorial ----------
+  const TUTORIAL = [
+    {
+      title: 'Your Mission',
+      body: 'You are the captain of a small ship. The world is being swallowed by a creeping <b>fog</b>. The last functioning <b>lighthouse</b> stands in the far corner of the sea — golden, glowing. <br><br>Reach it before the fog catches you, your fuel runs out, or the crew breaks.'
+    },
+    {
+      title: 'Moving Your Ship',
+      body: 'Use <b>Arrow keys</b> or <b>WASD</b> to sail one tile per turn. You can also <b>click</b> any tile adjacent to your ship.<br><br>Each move costs <b>1 fuel</b> normally. Each move advances time — the fog gets one chance to spread.'
+    },
+    {
+      title: 'Wind (NEW!)',
+      body: 'The <b>wind compass</b> (top-right of the map and HUD) shows the current wind direction. Faint streaks across the sea show it too.<br><br>Each tile next to your ship shows a small <b>cost badge</b> coloured by direction:<br>&bull; <span style="color:#7be07b"><b>green 0</b></span> &mdash; with the wind: <b>free!</b> 50% chance of an extra drift tile.<br>&bull; <span style="color:#e0d27b"><b>yellow 1</b></span> &mdash; cross wind: normal 1 fuel.<br>&bull; <span style="color:#e07b7b"><b>red 2</b></span> &mdash; against the wind: 2 fuel and slow going.<br><br>The wind shifts every few turns (HUD shows turns left until it changes, e.g. "↑ 4t"). Plan your route around it.'
+    },
+    {
+      title: 'Islands & Ports',
+      body: '&bull; <b>Green islands</b> &rarr; refuel a small amount, sometimes carry cargo.<br>&bull; <b>Brown ports</b> &rarr; refuel more, +2 morale (hot meal!), and cargo.<br><br>Each island/port can only be used <b>once</b>. Plan a route that picks up enough fuel to reach the lighthouse.'
+    },
+    {
+      title: 'Fog & Morale',
+      body: 'Sailing into a <b>foggy tile</b> costs <b>2 morale</b> — the crew gets spooked. If morale drops to 0 or fuel runs out, the voyage ends.<br><br>Press <b>Space</b> or click <b>Wait</b> to rest a turn (+1 morale), but the fog still spreads. Sometimes waiting for the wind to shift is the right call.'
+    },
+    {
+      title: 'Set Sail!',
+      body: 'Score = leftover fuel × 10 + cargo × 25 + morale × 15 + speed bonus.<br><br>Tip: at the start, look at the wind. If it points toward the lighthouse, sail hard while you can. If not, head for an island that lies along the wind, and wait for the shift.<br><br>Good luck, captain.'
+    }
+  ];
+  let tutIdx = 0;
+  function showTutorial(i = 0) {
+    tutIdx = i;
+    document.getElementById('tutorial').style.display = 'flex';
+    renderTut();
+  }
+  function renderTut() {
+    const t = TUTORIAL[tutIdx];
+    document.getElementById('tutContent').innerHTML = '<h3 style="color:#f0c674;margin-top:0;">' + t.title + '</h3>' + t.body;
+    document.getElementById('tutStep').textContent = (tutIdx+1) + ' / ' + TUTORIAL.length;
+    document.getElementById('tutPrev').disabled = tutIdx === 0;
+    document.getElementById('tutNext').textContent = tutIdx === TUTORIAL.length - 1 ? 'Start Game' : 'Next →';
+  }
+  document.getElementById('tutPrev').addEventListener('click', () => {
+    if (tutIdx > 0) { tutIdx--; renderTut(); }
+  });
+  document.getElementById('tutNext').addEventListener('click', () => {
+    if (tutIdx < TUTORIAL.length - 1) { tutIdx++; renderTut(); }
+    else {
+      document.getElementById('tutorial').style.display = 'none';
+      localStorage.setItem('lighthouse_seen_tutorial', '1');
+    }
+  });
+  document.getElementById('tutorialBtn').addEventListener('click', () => showTutorial(0));
+
+  newGame();
+
+  // Show tutorial on first visit
+  if (!localStorage.getItem('lighthouse_seen_tutorial')) {
+    showTutorial(0);
+  }
+})();
+</script>
+</body>
+</html>
